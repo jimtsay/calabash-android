@@ -13,7 +13,6 @@ module Calabash module Android
 
 module Operations
 
-
   def log(message)
     $stdout.puts "#{Time.now.strftime("%Y-%m-%d %H:%M:%S")} - #{message}" if (ARGV.include? "-v" or ARGV.include? "--verbose")
   end
@@ -23,17 +22,22 @@ module Operations
   end
 
   def macro(txt)
-    if self.respond_to?:step
+    if self.respond_to?(:step)
       step(txt)
     else
       Then(txt)
     end
   end
+
   def default_device
     unless @default_device
       @default_device = Device.new(self, ENV["ADB_DEVICE_ARG"], ENV["TEST_SERVER_PORT"], ENV["APP_PATH"], ENV["TEST_APP_PATH"])
     end
     @default_device
+  end
+
+  def set_default_device(device)
+    @default_device = device
   end
 
   def performAction(action, *arguments)
@@ -57,7 +61,7 @@ module Operations
     default_device.clear_app_data
   end
 
-  def start_test_server_in_background
+  def start_test_server_in_background(options={})
     default_device.start_test_server_in_background()
   end
 
@@ -83,32 +87,25 @@ module Operations
   end
 
   def wait_for(timeout, &block)
+    value = nil
     begin
       Timeout::timeout(timeout) do
-        until block.call
+        until (value = block.call)
           sleep 0.3
         end
       end
     rescue Exception => e
       raise e
     end
+    value
   end
 
   def query(uiquery, *args)
-    if uiquery.start_with? "webView"
-      uiquery.slice!(0, "webView".length)
-      if uiquery =~ /(css|xpath):\s*(.*)/
-        r = performAction("query", $1, $2)
-        JSON.parse(r["message"])
-      else
-       raise "Invalid query #{uiquery}"
-      end
-    else
-      arguments = [*args]
-      operation = {"method_name"=>"query", "arguments" => arguments}
-      data = {"query" => uiquery, "operation" => operation}
-      JSON.parse(http("/map",data))
-    end
+    map(uiquery,:query,*args)
+  end
+
+  def query_all(uiquery, *args)
+    map(uiquery, :query_all, *args)
   end
 
   def ni
@@ -131,10 +128,6 @@ module Operations
   end
 
   class Device
-
-    def make_default_device
-      @cucumber_world.default_device = self
-    end
 
     def initialize(cucumber_world, serial, server_port, app_path, test_server_path)
       @cucumber_world = cucumber_world
@@ -311,14 +304,30 @@ module Operations
       raise "Could not clear data" unless system(cmd)
     end
 
-    def start_test_server_in_background
+    def start_test_server_in_background(options={})
       raise "Will not start test server because of previous failures." if Cucumber.wants_to_quit
 
       if keyguard_enabled?
         wake_up
       end
 
-      cmd = "#{adb_command} shell am instrument -e target_package #{ENV["PACKAGE_NAME"]} -e main_activity #{ENV["MAIN_ACTIVITY"]} -e class sh.calaba.instrumentationbackend.InstrumentationBackend sh.calaba.android.test/sh.calaba.instrumentationbackend.CalabashInstrumentationTestRunner"
+      env_options = {:target_package => options[:target_package] || package_name(@app_path),
+                     :main_activity => options[:main_activity] || main_activity(@app_path),
+                     :debug => options[:debug] || false,
+                     :class => options[:class] || "sh.calaba.instrumentationbackend.InstrumentationBackend"}
+
+      cmd_arr = [adb_command, "shell am instrument"]
+
+      env_options.each_pair do |key, val|
+        cmd_arr << "-e"
+        cmd_arr << key.to_s
+        cmd_arr << val.to_s
+      end
+
+      cmd_arr << "sh.calaba.android.test/sh.calaba.instrumentationbackend.CalabashInstrumentationTestRunner"
+
+      cmd = cmd_arr.join(" ")
+
       log "Starting test server using:"
       log cmd
       raise "Could not execute command to start test server" unless system("#{cmd} 2>&1")
@@ -384,17 +393,20 @@ module Operations
   end
 
   def touch(uiquery,*args)
+    raise "Cannot touch nil" unless uiquery
+
     if uiquery.instance_of? String
       elements = query(uiquery, *args)
       raise "No elements found" if elements.empty?
       element = elements.first
     else
       element = uiquery
+      element = element.first if element.instance_of?(Array)
     end
 
 
-    center_x = element["frame"]["x"] + element["frame"]["width"] / 2
-    center_y = element["frame"]["y"] + element["frame"]["height"] / 2
+    center_x = element["rect"]["center_x"]
+    center_y = element["rect"]["center_y"]
     performAction("touch_coordinate", center_x, center_y)
   end
 
@@ -451,12 +463,16 @@ module Operations
     ni
   end
 
+  def element_does_not_exist(uiquery)
+    query(uiquery).empty?
+  end
+
   def element_exists(uiquery)
-    !query(uiquery).empty?
+    not element_does_not_exist(uiquery)
   end
 
   def view_with_mark_exists(expected_mark)
-    element_exists( "view marked:'#{expected_mark}'" )
+    element_exists( "android.view.View marked:'#{expected_mark}'" )
   end
 
   def check_element_exists( query )
@@ -505,8 +521,19 @@ module Operations
     ni
   end
 
-  def map( query, method_name, *method_args )
-    ni
+  def map(query, method_name, *method_args)
+    operation_map = {
+        :method_name => method_name,
+        :arguments => method_args
+    }
+    res = http("/map",
+               {:query => query, :operation => operation_map})
+    res = JSON.parse(res)
+    if res['outcome'] != 'SUCCESS'
+      screenshot_and_raise "map #{query}, #{method_name} failed because: #{res['reason']}\n#{res['details']}"
+    end
+
+    res['results']
   end
 
   def url_for( verb )

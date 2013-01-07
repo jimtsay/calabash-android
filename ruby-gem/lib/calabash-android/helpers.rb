@@ -44,16 +44,8 @@ def resign_apk(app_path)
     unsigned_path = File.join(tmp_dir, 'unsigned.apk')
     FileUtils.cp(app_path, unsigned_path)
 
-    #Delete META-INF/*
-    to_remove = Zip::ZipFile.foreach(unsigned_path).find_all { |e| /^META-INF\// =~ e.name}.collect &:name
+    `java -jar "#{File.dirname(__FILE__)}/lib/unsign.jar" "#{unsigned_path}"`
 
-    Zip::ZipFile.open(unsigned_path) do |zip_file|
-      to_remove.each do |x|
-        log "Removing #{x}"
-        zip_file.remove x
-      end
-      zip_file.commit
-    end
     sign_apk(unsigned_path, app_path)
   end
 end
@@ -87,9 +79,17 @@ def read_keystore_info
   end
 end
 
+def keytool_path
+  if is_windows?
+    "\"#{ENV["JAVA_HOME"]}/bin/keytool.exe\""
+  else
+    "keytool"
+  end
+end
+
 def fingerprint_from_keystore
   keystore_info = read_keystore_info
-  fingerprints = `keytool -v -list -alias #{keystore_info["keystore_alias"]} -keystore #{keystore_info["keystore_location"]} -storepass #{keystore_info["keystore_password"]}`
+  fingerprints = `#{keytool_path} -v -list -alias #{keystore_info["keystore_alias"]} -keystore #{keystore_info["keystore_location"]} -storepass #{keystore_info["keystore_password"]}`
   md5_fingerprint = extract_md5_fingerprint(fingerprints)
   log "MD5 fingerprint for keystore (#{keystore_info["keystore_location"]}): #{md5_fingerprint}"
   md5_fingerprint
@@ -107,7 +107,7 @@ def fingerprint_from_apk(app_path)
       raise "No RSA file found in META-INF. Cannot proceed." if rsa_files.empty?
       raise "More than one RSA file found in META-INF. Cannot proceed." if rsa_files.length > 1
 
-      fingerprints = `keytool -v -printcert -file #{rsa_files.first}`
+      fingerprints = `#{keytool_path} -v -printcert -file #{rsa_files.first}`
       md5_fingerprint = extract_md5_fingerprint(fingerprints)
       log "MD5 fingerprint for signing cert (#{app_path}): #{md5_fingerprint}"
       md5_fingerprint
@@ -116,9 +116,13 @@ def fingerprint_from_apk(app_path)
 end
 
 def extract_md5_fingerprint(fingerprints)
-  m = fingerprints.scan(/MD5:\s+((?:[[:xdigit:]][[:xdigit:]]:){15}[[:xdigit:]][[:xdigit:]])/)
-  raise "No MD5 fingerprint found:\n #{fingerprints}" unless m
-  m.last.first
+  if fingerprints.encoding.name == "CP850"
+    fingerprints = fingerprints.gsub("\xA0".force_encoding("CP850"),"")
+  end
+
+  m = fingerprints.scan(/MD5\s*:\s*((?:[[:xdigit:]][[:xdigit:]]:){15}[[:xdigit:]][[:xdigit:]])/).flatten
+  raise "No MD5 fingerprint found:\n #{fingerprints}" if m.empty?
+  m.first
 end
 
 def is_windows?

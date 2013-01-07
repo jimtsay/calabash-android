@@ -14,13 +14,13 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import sh.calaba.instrumentationbackend.Command;
+import sh.calaba.instrumentationbackend.FranklyResult;
 import sh.calaba.instrumentationbackend.InstrumentationBackend;
 import sh.calaba.instrumentationbackend.Result;
 import sh.calaba.instrumentationbackend.query.Query;
 import sh.calaba.instrumentationbackend.query.QueryResult;
 import sh.calaba.org.codehaus.jackson.map.DeserializationConfig.Feature;
 import sh.calaba.org.codehaus.jackson.map.ObjectMapper;
-import sh.calaba.org.codehaus.jackson.type.TypeReference;
 import android.graphics.Bitmap;
 import android.util.Log;
 import android.view.View;
@@ -75,6 +75,7 @@ public class HttpServer extends NanoHTTPD {
 			return new NanoHTTPD.Response(HTTP_OK, MIME_HTML, "pong");
 
 		} else if (uri.endsWith("/map")) {
+			FranklyResult errorResult = null;
 			try {
 				String commandString = params.getProperty("json");
 				ObjectMapper mapper = new ObjectMapper();
@@ -85,39 +86,23 @@ public class HttpServer extends NanoHTTPD {
 				String methodName = (String) op.get("method_name");
 				List arguments = (List) op.get("arguments");
 				
+				//For now we only support query and query_all
+				//query_all includes also invisible views, while query filters them
+				boolean includeInVisible = "query_all".equals(methodName);
 				
 				
-				
+				List queryResult = new Query(uiQuery,arguments).executeInMainThread(includeInVisible);
 
-				System.out.println(methodName);
-				System.out.println(uiQuery);
-				System.out.println(arguments);
-				
-				QueryResult queryResult = new Query(uiQuery,arguments).execute();
-				
-
-				return new NanoHTTPD.Response(HTTP_OK, "application/json;charset=utf-8",
-						queryResult.asJson());
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
+				return new NanoHTTPD.Response(HTTP_OK, "application/json;charset=utf-8", 
+						FranklyResult.successResult(queryResult).asJson());
+			} catch (Exception e ) {
 				e.printStackTrace();
-			}
-
+                errorResult = FranklyResult.fromThrowable(e);
+            }
+            return new NanoHTTPD.Response(HTTP_OK, "application/json;charset=utf-8", errorResult.asJson());
 		} else if (uri.endsWith("/query")) {
-			try {
-				String commandString = params.getProperty("json");
-				ObjectMapper mapper = new ObjectMapper();
-				Map<String, String> command = mapper.readValue(commandString,
-						new TypeReference<Map<String, String>>() {
-						});
-				QueryResult result = new Query(command.get("query")).execute();
-				return new NanoHTTPD.Response(HTTP_OK, MIME_HTML,
-						result.asJson());
-			} catch (IOException e) {
-				e.printStackTrace();
-				return new Response(HTTP_INTERNALERROR, MIME_PLAINTEXT,
-						"Could not parse arguments as JSON");
-			}
+			return new Response(HTTP_BADREQUEST, MIME_PLAINTEXT,
+					"/query endpoint is discontinued - use /map with operation query");
 		} else if (uri.endsWith("/kill")) {
 			lock.lock();
 			try {
