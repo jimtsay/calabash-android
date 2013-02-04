@@ -6,12 +6,16 @@ require 'json'
 require 'socket'
 require 'timeout'
 require 'calabash-android/helpers'
+require 'calabash-android/wait_helpers'
+require 'calabash-android/version'
 require 'retriable'
+require 'cucumber'
 
 
 module Calabash module Android
 
 module Operations
+  include Calabash::Android::WaitHelpers
 
   def log(message)
     $stdout.puts "#{Time.now.strftime("%Y-%m-%d %H:%M:%S")} - #{message}" if (ARGV.include? "-v" or ARGV.include? "--verbose")
@@ -86,19 +90,19 @@ module Operations
     default_device.set_gps_coordinates(latitude, longitude)
   end
 
-  def wait_for(timeout, &block)
-    value = nil
-    begin
-      Timeout::timeout(timeout) do
-        until (value = block.call)
-          sleep 0.3
-        end
-      end
-    rescue Exception => e
-      raise e
-    end
-    value
-  end
+  #def wait_for(timeout, &block)
+  #  value = nil
+  #  begin
+  #    Timeout::timeout(timeout) do
+  #      until (value = block.call)
+  #        sleep 0.3
+  #      end
+  #    end
+  #  rescue Exception => e
+  #    raise e
+  #  end
+  #  value
+  #end
 
   def query(uiquery, *args)
     converted_args = []
@@ -177,7 +181,7 @@ module Operations
       succeeded = `#{adb_command} shell pm list packages`.include?("package:#{pn}")
 
       unless succeeded
-        Cucumber.wants_to_quit = true
+        ::Cucumber.wants_to_quit = true
         raise "#{pn} did not get installed. Aborting!"
       end
     end
@@ -325,7 +329,7 @@ module Operations
     end
 
     def start_test_server_in_background(options={})
-      raise "Will not start test server because of previous failures." if Cucumber.wants_to_quit
+      raise "Will not start test server because of previous failures." if ::Cucumber.wants_to_quit
 
       if keyguard_enabled?
         wake_up
@@ -369,12 +373,39 @@ module Operations
               log "Instrumentation backend is ready!"
             end
         end
+      rescue Exception => e
 
-      rescue
         msg = "Unable to make connection to Calabash Test Server at http://127.0.0.1:#{@server_port}/\n"
         msg << "Please check the logcat output for more info about what happened\n"
         raise msg
       end
+
+      log "Checking client-server version match..."
+      response = perform_action('version')
+      unless response['success']
+        msg = ["Unable to obtain Test Server version. "]
+        msg << "Please delete your test_servers"
+        msg << "and re-run calabash-android run..."
+        msg_s = msg.join("\n")
+        log(msg_s)
+        raise msg_s
+      end
+      unless response['message'] == Calabash::Android::SERVER_VERSION
+
+        msg = ["Calabash Client and Test-server version mismatch."]
+        msg << "Client version #{Calabash::Android::VERSION}"
+        msg << "Test-server version #{response['message']}"
+        msg << "Expected Test-server version #{Calabash::Android::SERVER_VERSION}"
+        msg << "\n\nSolution:\n\n"
+        msg << "Please delete your test_servers"
+        msg << "and re-run calabash-android run..."
+        msg_s = msg.join("\n")
+        log(msg_s)
+        raise msg_s
+      end
+      log("Client and server versions match. Proceeding...")
+
+
     end
 
     def shutdown_test_server
@@ -408,7 +439,6 @@ module Operations
 
   def screenshot_and_raise(msg)
     screenshot_embed
-    sleep 5
     raise(msg)
   end
 
@@ -417,7 +447,7 @@ module Operations
 
     if uiquery.instance_of? String
       elements = query(uiquery, *args)
-      raise "No elements found" if elements.empty?
+      raise "No elements found. Query: #{uiquery}" if elements.empty?
       element = elements.first
     else
       element = uiquery
