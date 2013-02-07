@@ -98,6 +98,10 @@ module Operations
     default_device.set_gps_coordinates(latitude, longitude)
   end
 
+  def press_back_key
+    default_device.press_back_key
+  end
+    
   #def wait_for(timeout, &block)
   #  value = nil
   #  begin
@@ -438,6 +442,15 @@ module Operations
 
     def set_gps_coordinates(latitude, longitude)
       perform_action('set_gps_coordinates', latitude, longitude)
+    end
+      
+    def input_keyevent(keycode)
+      cmd = "#{adb_command} shell input keyevent #{keycode.to_s}"
+      result = `#{cmd}`
+    end
+      
+    def press_back_key
+      input_keyevent(4)
     end
   end
 
