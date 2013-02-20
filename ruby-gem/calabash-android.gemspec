@@ -12,7 +12,8 @@ Gem::Specification.new do |s|
   s.summary     = %q{Client for calabash-android for automated functional testing on Android}
   s.description = %q{calabash-android drives tests for native  and hybrid Android apps. }
   s.files         = `git ls-files`.split("\n") + Dir["test-server/calabash-js/src/*.js"] + ["lib/calabash-android/lib/TestServer.apk"]
-  s.executables   = "calabash-android"
+  s.executables   = ["calabash-android","testautoa"]
+  s.default_executable = "calabash-android"
   s.require_paths = ["lib"]
 
   s.add_dependency( "cucumber" )

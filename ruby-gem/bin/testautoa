@@ -1,5 +1,9 @@
 #!/usr/bin/env ruby
 
+require 'fileutils'
+require 'json'
+require 'uri'
+
 def raise_if_android_home_not_set
   raise "Please set the ANDROID_HOME environment variable" unless ENV["ANDROID_HOME"]
 end
@@ -12,7 +16,7 @@ def print_usage
       Create an Android Virtual Device
     runavd
       Start an Android Virtual Device
-    lsdev
+    devices
       List connected Android Devices
     getbuild <version>
       Download a build 
@@ -25,6 +29,247 @@ def print_usage
 EOF
 end
 
+def is_windows?
+  (RUBY_PLATFORM =~ /mswin|mingw|cygwin/)
+end
+
+def setup
+  read_settings
+  puts "Settings for Test Automation"
+
+  ask_for_setting(:svn_location, "Please enter svn location", @settings["svn_location"])
+  ask_for_setting(:svn_username, "Please enter svn username", @settings["svn_username"])
+  ask_for_setting(:svn_password, "Please enter svn password", @settings["svn_password"])
+
+  ask_for_setting(:build_drop_location, "Please enter build drop location", @settings["build_drop_location"])
+  ask_for_setting(:build_drop_username, "Please enter the username", @settings["build_drop_username"])
+  ask_for_setting(:build_drop_password, "Please enter the password", @settings["build_drop_password"])
+  
+  ask_for_setting(:device_serialno, "Please enter the serial number of the device", @settings["device_serialno"])
+  ask_for_setting(:avd_name, "Please enter the name of Android emulator", @settings["avd_name"] ||= "testauto_avd")
+  puts "Available Targets:"
+  get_target_names.each{|i| puts "* #{i}" }
+  ask_for_setting(:avd_target, "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
+  puts "Available CPUs:"
+  get_abis(@settings["avd_target"]).each{|i| puts "* #{i}"}
+  ask_for_setting(:avd_cpu, "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
+  ask_for_setting(:avd_sdcard_size, "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
+  ask_for_setting(:avd_ram_size, "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
+  @settings[:build_drop_branch_dir] = "Mobile/Android/branch"
+  @settings[:build_drop_trunk_dir] = "Mobile/Android/trunk"
+  
+  open('.testautoa_settings', 'w') do |f|
+    f.puts @settings.to_json
+  end
+  puts "Saved your settings to .testautoa_settings. You can edit the settings manually or run this setup script again"
+end
+
+def ask_for_setting(key, msg, def_value)
+  puts (def_value == "" ? msg : "#{msg} (#{def_value})")
+  input = STDIN.gets.chomp
+  @settings[key] = (input == "" ? def_value : input)
+end
+
+def read_settings
+  if File.exist? ".testautoa_settings"
+    @settings = JSON.parse(IO.read(".testautoa_settings"))
+  else
+    @settings = {}
+  end
+end
+
+def smb_connect_win(location,username,password)
+    mount_node = location.tr('/', '\\')
+    username = username.tr('/', '\\')
+
+    cmd = "net use"
+    output=`#{cmd}` ; result=$?.success?
+
+    if output.include?(mount_node)
+        cmd = "net use #{mount_node} /delete"
+        output=`#{cmd}` ; result=$?.success?
+    end
+
+    cmd = "net use #{mount_node} #{password} /user:#{username}"
+    output=`#{cmd}` ; result=$?.success?
+    raise "the command '#{cmd}' failed" if result == false
+
+    mount_node
+end
+
+def smb_disconnect_win(mount_node)
+    cmd = "net use #{mount_node} /delete"
+    output=`#{cmd}` ; result=$?.success?
+end
+
+def smb_connect_mac(location,username,password)
+    # create mount node
+    mount_node = "/Volumes/build_drop_temp"
+    if File.exists?(mount_node)
+        cmd = "umount #{mount_node}"
+        output=`#{cmd}` ; result=$?.success?
+        FileUtils.rm_rf(mount_node) if result == false
+    end
+    cmd = "mkdir #{mount_node}"
+    output=`#{cmd}` ; result=$?.success?
+    raise "the command '#{cmd}' failed" if result == false
+    
+    # mount smbfs
+    location = location.tr('\\','/')
+    username = username.tr('\\',';').tr('/',';')
+    raise "The build drop location is incorrect" if not location.start_with?("//")
+    cmd = "mount -t smbfs //'#{username}':#{password}@#{location[2..-1]}  #{mount_node}"
+    output=`#{cmd}` ; result=$?.success?
+    raise "the command '#{cmd}' failed" if result == false
+    mount_node
+end
+
+def smb_disconnect_mac(mount_node)
+    # unmount fs
+    cmd = "umount -f #{mount_node}"
+    output=`#{cmd}` ; result=$?.success?
+    raise "the command '#{cmd}' failed" if result == false
+end
+
+def smb_connect(location,username,password)
+    if is_windows?
+        smb_connect_win(location,username,password)
+    else
+        smb_connect_mac(location,username,password)
+    end
+end
+
+def smb_disconnect(mount_node)
+    if is_windows?
+        smb_disconnect_win(mount_node)
+    else
+        smb_disconnect_mac(mount_node)
+    end    
+end
+
+def get_build
+    mount_node = smb_connect(@settings["build_drop_location"], 
+                             @settings["build_drop_username"], 
+                             @settings["build_drop_password"])
+    if ARGV.first == 'list'
+        # list build versions
+        branch_path = File.join(mount_node, @settings["build_drop_branch_dir"])
+        Dir.entries(branch_path).sort_by{|c| File.stat(File.join(branch_path,c)).ctime}.each do |d|
+            m = d.match(/^Android(\S+)$/)
+            if m != nil
+                puts m[1]
+            end
+        end
+    else
+        if ARGV.first == 'trunk'
+            # copy the trunk build
+            release_path = File.join(mount_node, @settings["build_drop_trunk_dir"])
+        else
+            # copy the version build
+            release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "Android#{ARGV.first}/Release")
+        end
+        build_dir = Dir.entries(release_path).sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
+        apk_file = "ConcurMobile.apk"
+        source = File.join(release_path, build_dir, apk_file)
+        raise "the file '#{source}' does not exist" if not File.exists?(source)
+        FileUtils.copy(source, File.join(FileUtils.pwd, apk_file))
+        puts "Copy the build from #{source}"           
+    end
+
+    smb_disconnect(mount_node)
+end
+
+def get_script
+    username = @settings["svn_username"]
+    password = @settings["svn_password"]
+    
+    if ARGV.first == 'list'
+        uri = URI.join(@settings["svn_location"], "Mobile/", "BVT/", "CTE/")
+        puts `svn list #{uri} --username #{username} --password #{password}`        
+    else
+        uri = URI.join(@settings["svn_location"], "_support/", "support/")
+        puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
+        uri = URI.join(@settings["svn_location"], "_support/", "step_definition/")
+        puts `svn export --force #{uri} features/step_definitions --username #{username} --password #{password}`
+    end
+end
+
+def adb_path
+    raise_if_android_home_not_set
+    File.join(ENV['ANDROID_HOME'], 'platform-tools', 'adb')
+end
+
+def android_path
+    raise_if_android_home_not_set
+    File.join(ENV['ANDROID_HOME'], 'tools', 'android')
+end
+
+def emulator_path
+    raise_if_android_home_not_set
+    File.join(ENV['ANDROID_HOME'], 'tools', 'emulator')
+end
+
+def list_devices
+    `#{adb_path} devices`.scan(/^(\S*)\s*device$/).each { |i| puts i[0] }
+end
+
+def get_target_names
+    targets = `#{android_path} list target`.scan(/^id: (\d*) or "([^\"]*)"$/)
+    targets.collect{|i| i[1]}
+end
+
+def get_abis(target)
+    `#{android_path} list target`.scan(/^id: (\d+) or "#{target}"(?:(?:.*[\r\n]*)\s{5}.*)*ABIs : (.*)$/)[0][1].split(/[\s,]+/)
+end
+
+def list_target
+    puts `#{android_path} list target`
+end
+
+def list_avd
+    puts `#{android_path} list avd`
+end
+
+def create_avd
+    android_targets = get_target_names.find_all{ |t| t =~ /android-(\d*)/ }
+    google_targets = get_target_names.find_all{ |t| t =~ /Google Inc.:Google APIs:(\d*)/ }
+
+    name = @settings["avd_name"]
+    target = @settings["avd_target"]
+    cpu = @settings["avd_cpu"]
+    sdcard_size = @settings["avd_sdcard_size"]
+    ram_size = @settings["avd_ram_size"]
+    
+    # validate settings
+    raise "the target '#{target}' does not exist" if not get_target_names.include?(target)
+    
+    #create avd
+    result = `echo no | \"#{android_path}\" create avd -f -n #{name} -t #{target} -c #{sdcard_size} -b #{cpu}`.include? "Created AVD '#{name}' based on Android"
+    raise "Creating AVD Failed" if result == false
+    config_ini = File.join(File.expand_path("~"), ".android", 'avd', "#{name}.avd", "config.ini")
+    config_bak = File.join(File.expand_path("~"), ".android", 'avd', "#{name}.avd", "config.bak")
+    File.open(config_ini, 'r') do |f_ini|
+        File.open(config_bak, 'w') do |f_bak|
+            while line = f_ini.gets
+                match = line.match(/^hw.ramSize=(\d+)$/)
+                f_bak.puts(match != nil ? "hw.ramSize=#{ram_size}" : line)
+            end
+        end
+    end
+    File.delete(config_ini)
+    File.rename(config_bak, config_ini)
+end
+
+def run_avd
+    avds = `#{android_path} list avd`.scan(/^\s*Name: (.*)$/).collect{|i| i[0]}
+    avd_name = @settings["avd_name"]
+    if avds.include?(avd_name)
+        fork { exec("#{emulator_path} -avd #{avd_name}") }
+    else
+        puts "The AVD '#{avd_name}' does not exist"
+    end
+end
+
 if (ARGV.length == 0)
   print_usage
   exit 0
@@ -33,11 +278,50 @@ cmd = ARGV.shift
 if cmd == 'help'
   print_usage
   exit 0
-  
-elsif cmd == 'mkavd'
-  raise_if_android_home_not_set
+
+elsif cmd == 'setup'
+  setup
+  exit 0
+    
+elsif cmd == 'getbuild'
+  read_settings
+  get_build
   exit 0
 
+elsif cmd == 'getscript'
+  read_settings
+  get_script
+  exit 0
+
+elsif cmd == 'devices'
+  list_devices
+  exit 0
+
+elsif cmd == 'list'
+  option = ARGV.shift
+  if option == 'target'
+    list_target
+  elsif option == 'avd'
+    list_avd
+  end
+  exit 0
+
+elsif cmd == 'create'
+  option = ARGV.shift
+  if option == 'avd'
+    read_settings
+    create_avd
+  end
+  exit 0
+
+elsif cmd == 'run'
+  option = ARGV.shift
+  if option == 'avd'
+    read_settings
+    run_avd
+  end
+  exit 0
+  
 elsif cmd == 'version'
   puts Calabash::Android::VERSION
   exit 0
