@@ -7,6 +7,7 @@ require 'socket'
 require 'timeout'
 require 'calabash-android/helpers'
 require 'calabash-android/wait_helpers'
+require 'calabash-android/touch_helpers'
 require 'calabash-android/version'
 require 'retriable'
 require 'cucumber'
@@ -16,13 +17,10 @@ module Calabash module Android
 
 module Operations
   include Calabash::Android::WaitHelpers
+  include Calabash::Android::TouchHelpers
 
   def log(message)
     $stdout.puts "#{Time.now.strftime("%Y-%m-%d %H:%M:%S")} - #{message}" if (ARGV.include? "-v" or ARGV.include? "--verbose")
-  end
-
-  def take_screenshot
-    default_device.take_screenshot
   end
 
   def macro(txt)
@@ -88,6 +86,10 @@ module Operations
 
   def screenshot(options={:prefix => nil, :name => nil})
     default_device.screenshot(options)
+  end
+
+  def fail(msg="Error. Check log for details.", options={:prefix => nil, :name => nil, :label => nil})
+   screenshot_and_raise(msg, options)
   end
 
   def set_gps_coordinates_from_location(location)
@@ -254,25 +256,6 @@ module Operations
         else
           raise "App no longer running"
         end
-      end
-    end
-
-    def take_screenshot
-      puts "take_screenshot is deprecated. Use screenshot_embed instead."
-      path = ENV["SCREENSHOT_PATH_PREFIX"] || "results"
-      FileUtils.mkdir_p path unless File.exist? path
-      filename_prefix = FeatureNameMemory.feature_name.gsub(/\s+/, '_').downcase
-      begin
-        Timeout.timeout(30) do
-          file_name = "#{path}/#{filename_prefix}_#{FeatureNameMemory.invocation}_#{StepCounter.step_line}.png"
-          image = http("/screenshot")
-          open(file_name ,"wb") { |file|
-            file.write(image)
-          }
-          log "Screenshot stored in: #{file_name}!!!"
-        end
-      rescue Timeout::Error
-        raise Exception, "take_screenshot timed out"
       end
     end
 
