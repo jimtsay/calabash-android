@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+def raise_if_android_home_not_set
+  raise "Please set the ANDROID_HOME environment variable" unless ENV["ANDROID_HOME"]
+end
+
+def print_usage
+  puts <<EOF
+  Usage: testautoa <command-name> [parameters] [options]
+  <command-name> can be one of
+    mkavd
+      Create an Android Virtual Device
+    runavd
+      Start an Android Virtual Device
+    lsdev
+      List connected Android Devices
+    getbuild <version>
+      Download a build 
+    version
+      prints the gem version
+
+  <options> can be
+    -v, --verbose
+      Turns on verbose logging
+EOF
+end
+
+if (ARGV.length == 0)
+  print_usage
+  exit 0
+end
+cmd = ARGV.shift
+if cmd == 'help'
+  print_usage
+  exit 0
+  
+elsif cmd == 'mkavd'
+  raise_if_android_home_not_set
+  exit 0
+
+elsif cmd == 'version'
+  puts Calabash::Android::VERSION
+  exit 0
+else
+  print_usage
+end
