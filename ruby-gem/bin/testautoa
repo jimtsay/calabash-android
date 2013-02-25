@@ -3,6 +3,7 @@
 require 'fileutils'
 require 'json'
 require 'uri'
+require 'tmpdir'
 
 def raise_if_android_home_not_set
   raise "Please set the ANDROID_HOME environment variable" unless ENV["ANDROID_HOME"]
@@ -12,14 +13,32 @@ def print_usage
   puts <<EOF
   Usage: testautoa <command-name> [parameters] [options]
   <command-name> can be one of
-    mkavd
+    setup
+      Set up test automation configurations
+    run
+      Start test automation
+    resign
+      Resign the app with debug key
+    build
+      Build the test server
+    gen
+      Generate the skeleton of features directory
+    createavd
       Create an Android Virtual Device
     runavd
       Start an Android Virtual Device
     devices
       List connected Android Devices
-    getbuild <version>
-      Download a build 
+    getbuild list
+      List available builds in the build drop
+    getbuild <Version>
+      Download the build with <Version>.
+    getbuild trunk
+      Download the trunk build
+    getscript list
+      List available scripts
+    getscript <Script>
+      Download the specified script
     version
       prints the gem version
 
@@ -30,52 +49,142 @@ EOF
 end
 
 def is_windows?
-  (RUBY_PLATFORM =~ /mswin|mingw|cygwin/)
+    (RUBY_PLATFORM =~ /mswin|mingw|cygwin/)
+end
+
+def go
+    version = ARGV.shift
+    feature = ARGV.shift
+
+    features_dir = File.join(FileUtils.pwd, "features")
+    source_dir = File.join(File.dirname(__FILE__), '..', 'features-skeleton')
+    testserver_dir = File.join(FileUtils.pwd, "test_servers")
+    
+    # delete feature directory
+    FileUtils.rm_rf(features_dir)
+    FileUtils.rm_rf(testserver_dir)
+    
+    FileUtils.cp_r(source_dir, features_dir)
+    FileUtils.rm_rf(File.join(FileUtils.pwd, "features", "my_first.feature"))
+
+    cmd = "testautoa getbuild #{version}"
+    exit 1 if system(cmd) != true
+    sleep(1)
+    
+    cmd = "testautoa getscript #{feature}"
+    exit 1 if system(cmd) != true
+    sleep(1)
+
+    cmd = "testautoa resign"
+    exit 1 if system(cmd) != true
+    sleep(1)
+    
+    cmd = "testautoa build"
+    exit 1 if system(cmd) != true
+    sleep(1)
+    
+    cmd = "testautoa run"
+    result = system(cmd)
+    sleep(1)
+end
+
+def resign
+    app_package = @settings["app_package"]
+    STDOUT.sync = true
+    cmd = "calabash-android resign #{app_package}"
+    result = system(cmd)
+    sleep(1)
+    result
+end
+
+def build
+    app_package = @settings["app_package"]
+    STDOUT.sync = true
+    cmd = "calabash-android build #{app_package}"
+    result = system(cmd)
+    sleep(1)
+    result
+end
+
+def gen
+    STDOUT.sync = true
+    cmd = "calabash-android gen"
+    result = system(cmd)
+    sleep(1)
+    result
+end
+
+def run(option)
+    app_package = @settings["app_package"].to_s.strip
+    test_server_port = @settings["test_server_port"].to_s.strip
+    serial_number = @settings["device_serialno"].to_s.strip
+    STDOUT.sync = true
+    arguments = ARGV
+    cmd = "calabash-android #{option} #{app_package} #{arguments.join(" ")}"
+    env = {}
+    if test_server_port != ''
+        env["TEST_SERVER_PORT"] = test_server_port
+    end
+    if serial_number != ''
+        env["ADB_DEVICE_ARG"] = serial_number
+    end
+    result = system(env, cmd)
+    sleep(1)
+    result
 end
 
 def setup
-  read_settings
-  puts "Settings for Test Automation"
+    read_settings
+    puts "Settings for Test Automation"
 
-  ask_for_setting(:svn_location, "Please enter svn location", @settings["svn_location"])
-  ask_for_setting(:svn_username, "Please enter svn username", @settings["svn_username"])
-  ask_for_setting(:svn_password, "Please enter svn password", @settings["svn_password"])
+    ask_for_setting(:svn_location, "Please enter svn location", @settings["svn_location"])
+    ask_for_setting(:svn_username, "Please enter svn username", @settings["svn_username"])
+    ask_for_setting(:svn_password, "Please enter svn password", @settings["svn_password"])
 
-  ask_for_setting(:build_drop_location, "Please enter build drop location", @settings["build_drop_location"])
-  ask_for_setting(:build_drop_username, "Please enter the username", @settings["build_drop_username"])
-  ask_for_setting(:build_drop_password, "Please enter the password", @settings["build_drop_password"])
+    ask_for_setting(:build_drop_location, "Please enter build drop location", @settings["build_drop_location"])
+    ask_for_setting(:build_drop_username, "Please enter the username", @settings["build_drop_username"])
+    ask_for_setting(:build_drop_password, "Please enter the password", @settings["build_drop_password"])
   
-  ask_for_setting(:device_serialno, "Please enter the serial number of the device", @settings["device_serialno"])
-  ask_for_setting(:avd_name, "Please enter the name of Android emulator", @settings["avd_name"] ||= "testauto_avd")
-  puts "Available Targets:"
-  get_target_names.each{|i| puts "* #{i}" }
-  ask_for_setting(:avd_target, "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
-  puts "Available CPUs:"
-  get_abis(@settings["avd_target"]).each{|i| puts "* #{i}"}
-  ask_for_setting(:avd_cpu, "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
-  ask_for_setting(:avd_sdcard_size, "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
-  ask_for_setting(:avd_ram_size, "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
-  @settings[:build_drop_branch_dir] = "Mobile/Android/branch"
-  @settings[:build_drop_trunk_dir] = "Mobile/Android/trunk"
+    ask_for_setting(:app_package, "Please enter the name of app package", @settings["app_package"])
+    ask_for_setting(:device_serialno, "Please enter the serial number of the device", @settings["device_serialno"])
+    ask_for_setting(:test_server_port, "Please enter the test server port", @settings["test_server_port"] ||= "34777")
+
+    ask_for_setting(:avd_name, "Please enter the name of Android emulator", @settings["avd_name"] ||= "testauto_avd")
+    puts "Available Targets:"
+    get_target_names.each{|i| puts "* #{i}" }
+    ask_for_setting(:avd_target, "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
+    puts "Available CPUs:"
+    get_abis(@settings["avd_target"]).each{|i| puts "* #{i}"}
+    ask_for_setting(:avd_cpu, "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
+    ask_for_setting(:avd_sdcard_size, "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
+    ask_for_setting(:avd_ram_size, "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
+    @settings[:build_drop_branch_dir] = "Mobile/Android/branch"
+    @settings[:build_drop_trunk_dir] = "Mobile/Android/trunk"
   
-  open('.testautoa_settings', 'w') do |f|
-    f.puts @settings.to_json
-  end
-  puts "Saved your settings to .testautoa_settings. You can edit the settings manually or run this setup script again"
+    open('.testautoa_settings', 'w') do |f|
+        f.puts @settings.to_json
+    end
+    puts "Saved your settings to .testautoa_settings. You can edit the settings manually or run this setup script again"
 end
 
 def ask_for_setting(key, msg, def_value)
-  puts (def_value == "" ? msg : "#{msg} (#{def_value})")
-  input = STDIN.gets.chomp
-  @settings[key] = (input == "" ? def_value : input)
+    puts (def_value == "" ? msg : "#{msg} (#{def_value})")
+    input = STDIN.gets.chomp
+    if input.empty?
+        @settings[key] = def_value
+    elsif input.strip.empty?
+        @settings[key] = ''
+    else
+        @settings[key] = input    
+    end
 end
 
 def read_settings
-  if File.exist? ".testautoa_settings"
-    @settings = JSON.parse(IO.read(".testautoa_settings"))
-  else
-    @settings = {}
-  end
+    if File.exist? ".testautoa_settings"
+        @settings = JSON.parse(IO.read(".testautoa_settings"))
+    else
+        @settings = {}
+    end
 end
 
 def smb_connect_win(location,username,password)
@@ -182,13 +291,17 @@ end
 def get_script
     username = @settings["svn_username"]
     password = @settings["svn_password"]
-    
+    uri = URI.join(@settings["svn_location"], "Mobile/", "BVT/", "CTE/")
+
     if ARGV.first == 'list'
-        uri = URI.join(@settings["svn_location"], "Mobile/", "BVT/", "CTE/")
         puts `svn list #{uri} --username #{username} --password #{password}`        
     else
-        uri = URI.join(@settings["svn_location"], "_support/", "support/")
-        puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
+        feature = ARGV.first + (ARGV.first.end_with?('/')? '' : '/')
+        uri = URI.join(uri, feature)
+        puts `svn export --force #{uri} features --username #{username} --password #{password}`
+
+        #uri = URI.join(@settings["svn_location"], "_support/", "support/")
+        #puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
         uri = URI.join(@settings["svn_location"], "_support/", "step_definition/")
         puts `svn export --force #{uri} features/step_definitions --username #{username} --password #{password}`
     end
@@ -264,67 +377,85 @@ def run_avd
     avds = `#{android_path} list avd`.scan(/^\s*Name: (.*)$/).collect{|i| i[0]}
     avd_name = @settings["avd_name"]
     if avds.include?(avd_name)
-        fork { exec("#{emulator_path} -avd #{avd_name}") }
+        pid = spawn("#{emulator_path} -avd #{avd_name}")
     else
         puts "The AVD '#{avd_name}' does not exist"
     end
 end
 
 if (ARGV.length == 0)
-  print_usage
-  exit 0
+    print_usage
+    exit 0
 end
+
 cmd = ARGV.shift
+
 if cmd == 'help'
-  print_usage
-  exit 0
+    print_usage
+    exit 0
 
 elsif cmd == 'setup'
-  setup
-  exit 0
+    setup
+    exit 0
     
 elsif cmd == 'getbuild'
-  read_settings
-  get_build
-  exit 0
+    read_settings
+    File.open("#{Dir.tmpdir}/testauto.lock", 'w') { |f|
+        f.flock(File::LOCK_EX)
+        get_build
+    }
+    exit 0
 
 elsif cmd == 'getscript'
-  read_settings
-  get_script
-  exit 0
+    read_settings
+    get_script
+    exit 0
 
 elsif cmd == 'devices'
-  list_devices
-  exit 0
+    list_devices
+    exit 0
 
 elsif cmd == 'list'
-  option = ARGV.shift
-  if option == 'target'
-    list_target
-  elsif option == 'avd'
-    list_avd
-  end
-  exit 0
+    option = ARGV.shift
+    if option == 'target'
+        list_target
+    elsif option == 'avd'
+        list_avd
+    end
+    exit 0
 
-elsif cmd == 'create'
-  option = ARGV.shift
-  if option == 'avd'
+elsif cmd == 'createavd'
     read_settings
     create_avd
-  end
-  exit 0
+    exit 0
 
-elsif cmd == 'run'
-  option = ARGV.shift
-  if option == 'avd'
+elsif cmd == 'runavd'
     read_settings
     run_avd
-  end
-  exit 0
-  
+    exit 0
+
+elsif cmd == 'run' or cmd == 'console'
+    read_settings
+    run(cmd)
+    
+elsif cmd == 'resign'
+    read_settings
+    resign
+
+elsif cmd == 'build'
+    read_settings
+    build
+
+elsif cmd == 'gen'
+    gen
+
+elsif cmd == 'go'
+    go
+    
 elsif cmd == 'version'
-  puts Calabash::Android::VERSION
-  exit 0
+    puts Calabash::Android::VERSION
+    exit 0
+
 else
   print_usage
 end
