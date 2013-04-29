@@ -104,6 +104,10 @@ module Operations
     default_device.press_back_key
   end
     
+  def switch_wifi(on)
+    default_device.switch_wifi(on)
+  end
+    
   #def wait_for(timeout, &block)
   #  value = nil
   #  begin
@@ -439,6 +443,11 @@ module Operations
       
     def press_back_key
       input_keyevent(4)
+    end
+      
+    def switch_wifi(on)
+        cmd = "#{adb_command} shell am start -n com.concur.wifiswitch/." + (on ? "On" : "Off") + "Activity"
+        result = `#{cmd}`
     end
   end
 

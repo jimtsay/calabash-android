@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+require 'calabash-android/version'
+require 'calabash-android/operations'
 require 'fileutils'
 require 'json'
 require 'uri'
@@ -29,6 +31,8 @@ def print_usage
       Start an Android Virtual Device
     devices
       List connected Android Devices
+    install tools
+      Install all tools
     getbuild list
       List available builds in the build drop
     getbuild <Version>
@@ -39,6 +43,8 @@ def print_usage
       List available scripts
     getscript <Script>
       Download the specified script
+    go <Version> <Script>
+      Download the build with <Version> and start test automation with <Script>
     version
       prints the gem version
 
@@ -137,29 +143,30 @@ def setup
     read_settings
     puts "Settings for Test Automation"
 
-    ask_for_setting(:svn_location, "Please enter svn location", @settings["svn_location"])
-    ask_for_setting(:svn_username, "Please enter svn username", @settings["svn_username"])
-    ask_for_setting(:svn_password, "Please enter svn password", @settings["svn_password"])
+    ask_for_setting("svn_location", "Please enter svn location for scripts", @settings["svn_location"])
+    ask_for_setting("svn_location_tools", "Please enter svn location for tools", @settings["svn_location_tools"])
+    ask_for_setting("svn_username", "Please enter svn username", @settings["svn_username"])
+    ask_for_setting("svn_password", "Please enter svn password", @settings["svn_password"])
 
-    ask_for_setting(:build_drop_location, "Please enter build drop location", @settings["build_drop_location"])
-    ask_for_setting(:build_drop_username, "Please enter the username", @settings["build_drop_username"])
-    ask_for_setting(:build_drop_password, "Please enter the password", @settings["build_drop_password"])
+    ask_for_setting("build_drop_location", "Please enter build drop location", @settings["build_drop_location"])
+    ask_for_setting("build_drop_username", "Please enter the username", @settings["build_drop_username"])
+    ask_for_setting("build_drop_password", "Please enter the password", @settings["build_drop_password"])
   
-    ask_for_setting(:app_package, "Please enter the name of app package", @settings["app_package"])
-    ask_for_setting(:device_serialno, "Please enter the serial number of the device", @settings["device_serialno"])
-    ask_for_setting(:test_server_port, "Please enter the test server port", @settings["test_server_port"] ||= "34777")
+    ask_for_setting("app_package", "Please enter the name of app package", @settings["app_package"])
+    ask_for_setting("device_serialno", "Please enter the serial number of the device", @settings["device_serialno"])
+    ask_for_setting("test_server_port", "Please enter the test server port", @settings["test_server_port"] ||= "34777")
 
-    ask_for_setting(:avd_name, "Please enter the name of Android emulator", @settings["avd_name"] ||= "testauto_avd")
+    ask_for_setting("avd_name", "Please enter the name of Android emulator", @settings["avd_name"] ||= "testauto_avd")
     puts "Available Targets:"
     get_target_names.each{|i| puts "* #{i}" }
-    ask_for_setting(:avd_target, "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
+    ask_for_setting("avd_target", "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
     puts "Available CPUs:"
     get_abis(@settings["avd_target"]).each{|i| puts "* #{i}"}
-    ask_for_setting(:avd_cpu, "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
-    ask_for_setting(:avd_sdcard_size, "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
-    ask_for_setting(:avd_ram_size, "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
-    @settings[:build_drop_branch_dir] = "Mobile/Android/branch"
-    @settings[:build_drop_trunk_dir] = "Mobile/Android/trunk"
+    ask_for_setting("avd_cpu", "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
+    ask_for_setting("avd_sdcard_size", "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
+    ask_for_setting("avd_ram_size", "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
+    @settings["build_drop_branch_dir"] = "Mobile/Android/branch"
+    @settings["build_drop_trunk_dir"] = "Mobile/Android/trunk"
   
     open('.testautoa_settings', 'w') do |f|
         f.puts @settings.to_json
@@ -227,6 +234,12 @@ def smb_connect_mac(location,username,password)
     location = location.tr('\\','/')
     username = username.tr('\\',';').tr('/',';')
     raise "The build drop location is incorrect" if not location.start_with?("//")
+    paths = location.split('/')
+    if paths.size > 4
+        location = paths.shift(4).join('/')
+        @settings["build_drop_branch_dir"] = [paths.join('/'), @settings["build_drop_branch_dir"]].join('/')
+        @settings["build_drop_trunk_dir"] = [paths.join('/'), @settings["build_drop_trunk_dir"]].join('/')       
+    end    
     cmd = "mount -t smbfs //'#{username}':#{password}@#{location[2..-1]}  #{mount_node}"
     output=`#{cmd}` ; result=$?.success?
     raise "the command '#{cmd}' failed" if result == false
@@ -257,6 +270,8 @@ def smb_disconnect(mount_node)
 end
 
 def get_build
+    raise "Please configure build drop location, username, and password first by running setup" if @settings["build_drop_location"].to_s.empty? or @settings["build_drop_username"].to_s.empty? or @settings["build_drop_password"].to_s.empty?
+    
     mount_node = smb_connect(@settings["build_drop_location"], 
                              @settings["build_drop_username"], 
                              @settings["build_drop_password"])
@@ -277,7 +292,9 @@ def get_build
             # copy the version build
             release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "Android#{ARGV.first}/Release")
         end
-        build_dir = Dir.entries(release_path).sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
+        raise "No builds found in #{release_path}" unless File.directory?(release_path)
+        build_dir = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
+        raise "No builds found in #{release_path}" if build_dir == nil
         apk_file = "ConcurMobile.apk"
         source = File.join(release_path, build_dir, apk_file)
         raise "the file '#{source}' does not exist" if not File.exists?(source)
@@ -289,6 +306,8 @@ def get_build
 end
 
 def get_script
+    raise "Please configure Subversion location, username, and password first by running setup" if @settings["svn_location"].to_s.empty? or @settings["svn_username"].to_s.empty? or @settings["svn_password"].to_s.empty?
+    
     username = @settings["svn_username"]
     password = @settings["svn_password"]
     uri = URI.join(@settings["svn_location"], "Mobile/", "BVT/", "CTE/")
@@ -300,8 +319,8 @@ def get_script
         uri = URI.join(uri, feature)
         puts `svn export --force #{uri} features --username #{username} --password #{password}`
 
-        #uri = URI.join(@settings["svn_location"], "_support/", "support/")
-        #puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
+        uri = URI.join(@settings["svn_location"], "_support/", "support/")
+        puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
         uri = URI.join(@settings["svn_location"], "_support/", "step_definition/")
         puts `svn export --force #{uri} features/step_definitions --username #{username} --password #{password}`
     end
@@ -310,6 +329,17 @@ end
 def adb_path
     raise_if_android_home_not_set
     File.join(ENV['ANDROID_HOME'], 'platform-tools', 'adb')
+end
+
+def adb_path_w_sn
+    raise_if_android_home_not_set
+    serial_number = @settings["device_serialno"].to_s.strip
+    serial_number = " -s #{serial_number}" unless serial_number.empty?
+    adb_path + serial_number
+end
+
+def adb_shell(command)
+    system("#{adb_path_w_sn} shell #{command}")
 end
 
 def android_path
@@ -383,6 +413,29 @@ def run_avd
     end
 end
 
+def install_tools
+    raise "Please configure Subversion location for tools, username, and password first by running setup" if @settings["svn_location_tools"].to_s.empty? or @settings["svn_username"].to_s.empty? or @settings["svn_password"].to_s.empty?
+
+    location = @settings["svn_location_tools"]
+    location += '/' unless location.end_with?('/')    
+    username = @settings["svn_username"]
+    password = @settings["svn_password"]
+    serial_number = @settings["device_serialno"].to_s.strip
+    adb_dev_arg = ''
+    adb_dev_arg = "-s #{serial_number}" unless serial_number.empty?
+    
+    # delete tools directory
+    FileUtils.rm_rf(File.join(FileUtils.pwd, "tools"))
+
+    system("svn export --force #{location} tools/ --username #{username} --password #{password}")
+    tools = `svn list #{location} -R --username #{username} --password #{password}`.split(/\n/).select{|i| i.end_with?('.apk')}
+    tools.each do |tool|
+        tool_apk = File.join(FileUtils.pwd, "tools", tool)
+        puts "Installing #{tool_apk}"
+        system("#{adb_path} #{adb_dev_arg} install #{tool_apk}")
+    end
+end
+
 if (ARGV.length == 0)
     print_usage
     exit 0
@@ -414,6 +467,13 @@ elsif cmd == 'getscript'
 elsif cmd == 'devices'
     list_devices
     exit 0
+
+elsif cmd == 'install'
+    read_settings
+    tools = ARGV.shift
+    if tools == 'tools'
+        install_tools
+    end
 
 elsif cmd == 'list'
     option = ARGV.shift
