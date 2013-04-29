@@ -19,6 +19,10 @@ module Operations
   include Calabash::Android::WaitHelpers
   include Calabash::Android::TouchHelpers
 
+  def current_activity
+    `#{default_device.adb_command} shell dumpsys window windows`.each_line.grep(/mFocusedApp.+[\.\/]([^.\/\}]+)\}/){$1}.first
+  end
+
   def log(message)
     $stdout.puts "#{Time.now.strftime("%Y-%m-%d %H:%M:%S")} - #{message}" if (ARGV.include? "-v" or ARGV.include? "--verbose")
   end
@@ -71,8 +75,16 @@ module Operations
     default_device.clear_app_data
   end
 
+  def pull(remote, local)
+    default_device.pull(remote, local)
+  end
+
+  def push(local, remote)
+    default_device.push(local, remote)
+  end
+
   def start_test_server_in_background(options={})
-    default_device.start_test_server_in_background()
+    default_device.start_test_server_in_background(options)
   end
 
   def shutdown_test_server
@@ -152,6 +164,14 @@ module Operations
 
   def ni
     raise "Not yet implemented."
+  end
+
+  ###
+
+  ### simple page object helper
+
+  def page(clz, *args)
+    clz.new(self, *args)
   end
 
   ###
@@ -281,12 +301,7 @@ module Operations
       @@screenshot_count ||= 0
       path = "#{prefix}#{name}_#{@@screenshot_count}.png"
 
-      if ENV["SCREENSHOT_VIA_USB"] == "true"
-        device_args = "-s #{@serial}" if @serial
-        screenshot_cmd = "java -jar #{File.join(File.dirname(__FILE__), 'lib', 'screenShotTaker.jar')} #{path} #{device_args}"
-        log screenshot_cmd
-        raise "Could not take screenshot" unless system(screenshot_cmd)
-      else
+      if ENV["SCREENSHOT_VIA_USB"] == "false"
         begin
           res = http("/screenshot")
         rescue EOFError
@@ -295,31 +310,48 @@ module Operations
         File.open(path, 'wb') do |f|
           f.write res
         end
+      else
+        screenshot_cmd = "java -jar #{File.join(File.dirname(__FILE__), 'lib', 'screenshotTaker.jar')} #{serial} #{path}"
+        log screenshot_cmd
+        raise "Could not take screenshot" unless system(screenshot_cmd)
       end
-
 
       @@screenshot_count += 1
       path
     end
 
     def adb_command
+      "#{adb} -s #{serial}"
+    end
+
+    def adb
       if is_windows?
-        %Q("#{ENV["ANDROID_HOME"]}\\platform-tools\\adb.exe" #{device_args})
+        %Q("#{ENV["ANDROID_HOME"]}\\platform-tools\\adb.exe")
       else
-        %Q("#{ENV["ANDROID_HOME"]}/platform-tools/adb" #{device_args})
+        %Q("#{ENV["ANDROID_HOME"]}/platform-tools/adb")
       end
     end
 
-    def device_args
-      if @serial
-        "-s #{@serial}"
-      else
-        ""
-      end
+    def serial
+      @serial || default_serial
     end
+
+    def default_serial
+      devices = connected_devices
+      log "connected_devices: #{devices}"
+      raise "No connected devices" if devices.empty?
+      raise "More than one device connected. Specify device serial using ADB_DEVICE_ARG" if devices.length > 1
+      devices.first
+    end
+
+    def connected_devices
+      lines = `#{adb} devices`.split("\n")
+      lines.shift
+      lines.collect { |l| l.split("\t").first}
+    end  
 
     def wake_up
-      wake_up_cmd = "#{adb_command} shell am start -a android.intent.action.MAIN -n sh.calaba.android.test/sh.calaba.instrumentationbackend.WakeUp"
+      wake_up_cmd = "#{adb_command} shell am start -a android.intent.action.MAIN -n #{package_name(@test_server_path)}/sh.calaba.instrumentationbackend.WakeUp"
       log "Waking up device using:"
       log wake_up_cmd
       raise "Could not wake up the device" unless system(wake_up_cmd)
@@ -330,8 +362,18 @@ module Operations
     end
 
     def clear_app_data
-      cmd = "#{adb_command} shell am instrument sh.calaba.android.test/sh.calaba.instrumentationbackend.ClearAppData"
+      cmd = "#{adb_command} shell am instrument #{package_name(@test_server_path)}/sh.calaba.instrumentationbackend.ClearAppData"
       raise "Could not clear data" unless system(cmd)
+    end
+
+    def pull(remote, local)
+      cmd = "#{adb_command} pull #{remote} #{local}"
+      raise "Could not pull #{remote} to #{local}" unless system(cmd)
+    end
+
+    def push(local, remote)
+      cmd = "#{adb_command} push #{local} #{remote}"
+      raise "Could not push #{local} to #{remote}" unless system(cmd)
     end
 
     def start_test_server_in_background(options={})
@@ -341,12 +383,13 @@ module Operations
         wake_up
       end
 
-      puts "app_path: #{@app_path}"
-      env_options = {:target_package => options[:target_package] || package_name(@app_path),
-                     :main_activity => options[:main_activity] || main_activity(@app_path),
+      env_options = {:target_package => package_name(@app_path),
+                     :main_activity => main_activity(@app_path),
                      :test_server_port => @test_server_port,
-                     :debug => options[:debug] || false,
-                     :class => options[:class] || "sh.calaba.instrumentationbackend.InstrumentationBackend"}
+                     :debug => false,
+                     :class => "sh.calaba.instrumentationbackend.InstrumentationBackend"}
+
+      env_options = env_options.merge(options)
 
       cmd_arr = [adb_command, "shell am instrument"]
 
@@ -417,6 +460,11 @@ module Operations
     def shutdown_test_server
       begin
         http("/kill")
+        Timeout::timeout(3) do
+          sleep 0.3 while app_running?
+        end
+      rescue Timeout::Error
+        log ("Could not kill app. Waited to 3 seconds.")
       rescue EOFError
         log ("Could not kill app. App is most likely not running anymore.")
       end
