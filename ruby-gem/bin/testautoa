@@ -165,8 +165,8 @@ def setup
     ask_for_setting("avd_cpu", "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
     ask_for_setting("avd_sdcard_size", "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
     ask_for_setting("avd_ram_size", "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
-    @settings["build_drop_branch_dir"] = "Mobile/Android/branch"
-    @settings["build_drop_trunk_dir"] = "Mobile/Android/trunk"
+    @settings["build_drop_branch_dir"] = "Mobile/Android/branch/Corp"
+    @settings["build_drop_trunk_dir"] = "Mobile/Android/trunk/Corp"
   
     open('.testautoa_settings', 'w') do |f|
         f.puts @settings.to_json
