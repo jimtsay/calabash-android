@@ -1,5 +1,5 @@
-WAIT_TIMEOUT = ENV['WAIT_TIMEOUT'] || 30
-STEP_PAUSE = (ENV['STEP_PAUSE'] || 0.5).to_f
+WAIT_TIMEOUT = ENV['WAIT_TIMEOUT'] || 60
+STEP_PAUSE = (ENV['STEP_PAUSE'] || 1.0).to_f
 
 require 'calabash-android/steps/additions_manual_steps'
 require 'calabash-android/steps/app_steps'
