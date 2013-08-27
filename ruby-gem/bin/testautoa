@@ -126,13 +126,30 @@ def run(option)
     serial_number = @settings["device_serialno"].to_s.strip
     STDOUT.sync = true
     arguments = ARGV
+
     cmd = "calabash-android #{option} #{app_package} #{arguments.join(" ")}"
+    apk_info = get_apk_info(app_package)
+        
     env = {}
     if test_server_port != ''
         env["TEST_SERVER_PORT"] = test_server_port
     end
     if serial_number != ''
         env["ADB_DEVICE_ARG"] = serial_number
+    end
+    env["DEVICE_ID"] = serial_number
+    env["DEVICE_CLASS"] = ""
+    env["DEVICE_TYPE"] = ""
+    env["DEVICE_SN"] = adb_shell("getprop ro.boot.serialno").strip
+    env["DEVICE_MFG"] = adb_shell("getprop ro.product.manufacturer").strip
+    env["DEVICE_MODEL"] = adb_shell("getprop ro.product.model").strip
+    env["DEVICE_VERSION"] = adb_shell("getprop ro.product.version").strip
+    env["DEVICE_ANDROID_VERSION"] = adb_shell("getprop ro.build.version.release").strip
+    env["DEVICE_ANDROID_SDK"] = adb_shell("getprop ro.build.version.sdk").strip
+    env["APP_NAME"] = "#{apk_info['label']} (#{apk_info['name']})"
+    env["APP_VERSION"] = "#{apk_info['version_name']} (#{apk_info['version_code']})"
+    if File.exists?(File.join(FileUtils.pwd, "build_drop_dir.txt"))
+        env["BUILD_DROP_DIR"] = IO.read(File.join(FileUtils.pwd, "build_drop_dir.txt"))
     end
     result = system(env, cmd)
     sleep(1)
@@ -285,21 +302,44 @@ def get_build
             end
         end
     else
+        home_path = ENV['HOME'] || ENV['HOMEPATH']
         if ARGV.first == 'trunk'
             # copy the trunk build
             release_path = File.join(mount_node, @settings["build_drop_trunk_dir"])
+            cache_path = File.join(home_path, "build_drop_cache", @settings["build_drop_trunk_dir"])
         else
             # copy the version build
             release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "Android#{ARGV.first}/Release")
+            cache_path = File.join(home_path, "build_drop_cache", @settings["build_drop_branch_dir"], "Android#{ARGV.first}/Release")
         end
         raise "No builds found in #{release_path}" unless File.directory?(release_path)
-        build_dir = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
-        raise "No builds found in #{release_path}" if build_dir == nil
-        apk_file = "ConcurMobile.apk"
-        source = File.join(release_path, build_dir, apk_file)
+
+        build_dirs = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}
+        
+        apk_file = @settings["app_package"]
+        
+        # directory could be empty
+        build_dir = nil
+        begin
+            raise "No builds found in #{release_path}" if build_dirs.size == 0
+            if File.exists?(File.join(release_path, build_dirs.last, apk_file))
+                build_dir = build_dirs.last
+            else
+                build_dirs.pop 
+            end
+        end while build_dir == nil
+        
+        source = File.join(cache_path, build_dir, apk_file)
+        if not File.exists?(source)
+            release_source = File.join(release_path, build_dir, apk_file)
+            FileUtils.mkdir_p(File.dirname(source))
+            FileUtils.copy(release_source, source)
+            puts "Copy the build from #{release_source} to #{source}"  
+        end
         raise "the file '#{source}' does not exist" if not File.exists?(source)
         FileUtils.copy(source, File.join(FileUtils.pwd, apk_file))
-        puts "Copy the build from #{source}"           
+        puts "Copy the build from #{source}"
+        File.open(File.join(FileUtils.pwd, "build_drop_dir.txt"), 'w') {|f| f.write(build_dir) }           
     end
 
     smb_disconnect(mount_node)
@@ -326,6 +366,11 @@ def get_script
     end
 end
 
+def aapt_path
+    raise_if_android_home_not_set
+    File.join(ENV['ANDROID_HOME'], 'platform-tools', 'aapt')
+end
+
 def adb_path
     raise_if_android_home_not_set
     File.join(ENV['ANDROID_HOME'], 'platform-tools', 'adb')
@@ -339,7 +384,7 @@ def adb_path_w_sn
 end
 
 def adb_shell(command)
-    system("#{adb_path_w_sn} shell #{command}")
+    `#{adb_path_w_sn} shell #{command}`
 end
 
 def android_path
@@ -371,6 +416,20 @@ end
 
 def list_avd
     puts `#{android_path} list avd`
+end
+
+def get_apk_info(apk_path)
+    apk_info = {}
+    output = `#{aapt_path} d --values badging #{apk_path}`
+    if output =~ /^package: name='(.*)' versionCode='(.*)' versionName='(.*)'$/
+        apk_info['name'] = $1
+        apk_info['version_code'] = $2
+        apk_info['version_name'] = $3
+    end
+    if output =~ /^application-label:'(.*)'$/
+        apk_info['label'] = $1
+    end
+    apk_info
 end
 
 def create_avd
